@@ -6,3 +6,4 @@ from .gamg_solver import GAMGSolver
 from .gauss_seidel import gs 
 from .jacobi_solver import jacobi
 from .minres_solver import minres
+from .Gmres_sover import gmres as Gmres

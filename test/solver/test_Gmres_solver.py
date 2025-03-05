@@ -1,5 +1,5 @@
 from fealpy.backend import backend_manager as bm
-from fealpy.solver import minres as fealpy_minres
+from fealpy.solver import Gmres as fealpy_gmres
 
 import pytest
 from fealpy.utils import timer
@@ -26,7 +26,7 @@ pde = CosCosData()
 domain = pde.domain()
 
 
-class TestMINRESSolver:
+class TestGMRESSolver:
     def get_Af(self, mesh, p):
         """
         Assemble the stiffness matrix and load vector for the problem.
@@ -51,11 +51,11 @@ class TestMINRESSolver:
         A = A.device_put('cuda')
         return A, f
     
-
-    @pytest.mark.parametrize("backend", ['numpy', 'torch'])
-    def test_minres_cpu(self, backend):
+    
+    @pytest.mark.parametrize("backend", ['numpy', 'pytorch'])
+    def test_gmres_cpu(self, backend):
         bm.set_backend(backend)
-        
+
         # A, f
         nx_1 = ny_1 = 200
         p = 1
@@ -63,101 +63,93 @@ class TestMINRESSolver:
         space = LagrangeFESpace(mesh_1, p=p)
         uh = space.function()
         uh_1 = space.function()
-
-        A, f = self.get_Af(mesh_1, p=p)
-        print(A.shape)
-        # A = A.to_scipy()
-        if tmr is not None:
-            tmr.send("Matrix construction completed.")
         
-        # Solve using minres in fealpy
-        uh[:], info = fealpy_minres(A, f, rtol=1e-14)
-
+        A, f = self.get_Af(mesh_1, p=p)
+        # A = A.to_scipy()
+        print(A.shape)
         if tmr is not None:
-            tmr.send("fealpy_minres solver completed.")
+            tmr.send("Matrix assembly")
 
-        # Compute relative error
+        # Solve using gmres in fealpy
+        uh[:], info = fealpy_gmres(A, f, atol=1e-8, rtol=1e-8, restart=20)
+        if tmr is not None:
+            tmr.send("fealpy_gmres solving")
+        
         err = mesh_1.error(pde.solution, uh)
+        res_0 = bm.linalg.norm(f)
+        stop_res = info['residual'] / res_0
 
-        # Output results
-        print('Iterations in fealpy:', info['niter'])
-        print('Stop residual:', info['relative tolerance'])
-        print('Error in fealpy:', err)
-
-        # Solve using minres in scipy
-        from scipy.sparse.linalg import minres
+        # Output iteration info
+        print('Iterations (fealpy):', info['niter'])
+        print('Error (fealpy):', err)
+        print('Relative residual (fealpy):', stop_res)
+        
+        # Solve using gmres in scipy
+        from scipy.sparse.linalg import gmres
         A = A.to_scipy()
         if tmr is not None:
-            tmr.send("A 转换为scipy.")
+            tmr.send("Convert A to SciPy format")
 
-        uh_1[:], info_1 = minres(A, f,rtol=1e-14)
+        uh_1[:], info_1 = gmres(A, f, atol=1e-8, rtol=1e-8, restart=20)
         if tmr is not None:
-            tmr.send("minres solver completed.")
+            tmr.send("SciPy gmres solving")
         
-        print('Error in scipy:', mesh_1.error(pde.solution, uh_1))
+        print('Error (SciPy):', mesh_1.error(pde.solution, uh_1))
         
-        tmr.send(None)  # End timer
-        
+        tmr.send(None)
+
         # Check convergence
         rtol = 1e-4
-        if info['relative tolerance'] <= rtol:
-            print("Converged: True")
-            converged = True
-        else:
-            print("Converged: False")
-            converged = False
+        converged = stop_res <= rtol
+        print(f"Converged: {converged}")
 
         # Assert convergence
-        assert converged, f"MINRES solver did not converge: stop_res = {info['relative tolerance']} > rtol = {rtol}"
-
-
-    def test_minres_gpu(self):
-        bm.set_backend('pytorch')
+        assert converged, f"GMRES did not converge: residual = {stop_res:.2e} > rtol = {rtol}"
+        
+       
+    def test_gmres_gpu(self):
+        bm.set_backend("pytorch")
         bm.set_default_device("cuda")
-
+        
         # A, f
         nx_1 = ny_1 = 200
         p = 1
         mesh_1 = TriangleMesh.from_box(domain, nx_1, ny_1)
         space = LagrangeFESpace(mesh_1, p=p)
         uh = space.function()
-    
+        
         A, f = self.get_Af(mesh_1, p=p)
         A, f = self._get_gpu_data(A, f)
         print(A.shape)
         if tmr is not None:
-            tmr.send("Matrix construction completed.")
-        
-        # Solve using minres in fealpy
-        uh[:], info = fealpy_minres(A, f, rtol=1e-14)
+            tmr.send("Matrix assembly")
 
+        # Solve using gmres in fealpy
+        uh[:], info = fealpy_gmres(A, f, atol=1e-8, rtol=1e-8, restart=20)
         if tmr is not None:
-            tmr.send("fealpy_minres solver completed.")
-
-        # Compute relative error
-        err = mesh_1.error(pde.solution, uh)
-
-        # Output results
-        print('Iterations in fealpy:', info['niter'])
-        print('Stop residual:', info['relative tolerance'])
-        print('Error in fealpy:', err)
-
-        tmr.send(None)  # End timer
+            tmr.send("fealpy_gmres solving")
         
+        err = mesh_1.error(pde.solution, uh)
+        res_0 = bm.linalg.norm(f)
+        stop_res = info['residual'] / res_0
+
+        # Output iteration info
+        print('Iterations (fealpy):', info['niter'])
+        print('Error (fealpy):', err)
+        print('Relative residual (fealpy):', stop_res)
+        
+        tmr.send(None)
+
         # Check convergence
         rtol = 1e-4
-        if info['relative tolerance'] <= rtol:
-            print("Converged: True")
-            converged = True
-        else:
-            print("Converged: False")
-            converged = False
+        converged = stop_res <= rtol
+        print(f"Converged: {converged}")
 
         # Assert convergence
-        assert converged, f"MINRES solver did not converge: stop_res = {info['relative tolerance']} > rtol = {rtol}"
-
-
+        assert converged, f"GMRES did not converge: residual = {stop_res:.2e} > rtol = {rtol}"
+        
+         
 if __name__ == '__main__':
-    test = TestMINRESSolver()
-    test.test_minres_cpu('numpy')
-    test.test_minres_gpu()
+    test = TestGMRESSolver() 
+    test.test_gmres_cpu('numpy')
+    test.test_gmres_gpu()
